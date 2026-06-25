@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IDF — визуализация частот</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --text: #1a1a1a;
+      --muted: #5f6b7a;
+      --accent: #2563eb;
+      --border: #d8dee6;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1419;
+        --card: #1a2332;
+        --text: #e8edf4;
+        --muted: #9aa7b8;
+        --accent: #5b9dff;
+        --border: #2d3a4d;
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px 16px 48px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 1.6rem;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin-bottom: 24px;
+    }
+
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: end;
+    }
+
+    label {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    input[type="file"],
+    select,
+    button {
+      font: inherit;
+    }
+
+    select {
+      min-width: 180px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+    }
+
+    button {
+      padding: 8px 16px;
+      border-radius: 8px;
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .hint {
+      margin-top: 12px;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    #chart {
+      min-height: 480px;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .status {
+      margin-top: 12px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    .error {
+      color: #dc2626;
+    }
+
+    .file-list {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Визуализация IDF</h1>
+    <p class="subtitle">
+      Heatmap: ось X — время (шаг 10 мин), ось Y — частота (шаг 10 МГц), в ячейке — количество частот.
+    </p>
+
+    <div class="panel">
+      <div class="controls">
+        <label>
+          CSV файлы
+          <input type="file" id="fileInput" accept=".csv" multiple>
+        </label>
+        <label>
+          Номер поста
+          <select id="postSelect" disabled>
+            <option value="">— выберите пост —</option>
+          </select>
+        </label>
+        <button id="buildBtn" disabled>Построить</button>
+      </div>
+      <p class="hint">
+        Загрузите один или несколько CSV. Если файлы лежат в папке <code>data/</code>, посты подгрузятся автоматически.
+      </p>
+      {% if local_files %}
+      <ul class="file-list">
+        {% for name in local_files %}
+        <li>{{ name }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <div id="status" class="status"></div>
+    </div>
+
+    <div class="panel">
+      <div id="chart"></div>
+    </div>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById("fileInput");
+    const postSelect = document.getElementById("postSelect");
+    const buildBtn = document.getElementById("buildBtn");
+    const statusEl = document.getElementById("status");
+    const chartEl = document.getElementById("chart");
+
+    let uploadedPosts = [];
+
+    function setStatus(text, isError = false) {
+      statusEl.textContent = text;
+      statusEl.className = isError ? "status error" : "status";
+    }
+
+    function fillPostSelect(posts, selected = null) {
+      postSelect.innerHTML = "";
+      if (!posts.length) {
+        postSelect.disabled = true;
+        buildBtn.disabled = true;
+        postSelect.innerHTML = '<option value="">— нет постов —</option>';
+        return;
+      }
+      posts.forEach((post) => {
+        const opt = document.createElement("option");
+        opt.value = post;
+        opt.textContent = post;
+        postSelect.appendChild(opt);
+      });
+      postSelect.disabled = false;
+      buildBtn.disabled = false;
+      if (selected && posts.includes(selected)) {
+        postSelect.value = selected;
+      }
+    }
+
+    async function loadLocalChart(post) {
+      setStatus(`Загрузка диаграммы для поста ${post}...`);
+      const resp = await fetch(`/api/chart/${encodeURIComponent(post)}`);
+      if (!resp.ok) {
+        const err = await resp.json();
+        throw new Error(err.detail || "Ошибка загрузки");
+      }
+      const data = await resp.json();
+      Plotly.newPlot(chartEl, data.data, data.layout, { responsive: true });
+      setStatus(`Диаграмма для поста ${post} построена (данные из data/).`);
+    }
+
+    async function loadUploadedChart() {
+      const files = fileInput.files;
+      if (!files.length) {
+        setStatus("Выберите CSV файлы.", true);
+        return;
+      }
+
+      const form = new FormData();
+      for (const file of files) {
+        form.append("files", file);
+      }
+
+      const post = postSelect.value;
+      const url = post
+        ? `/api/upload/chart?post_number=${encodeURIComponent(post)}`
+        : "/api/upload/chart";
+
+      setStatus("Обработка файлов...");
+      buildBtn.disabled = true;
+
+      try {
+        const resp = await fetch(url, { method: "POST", body: form });
+        const payload = await resp.json();
+        if (!resp.ok) {
+          throw new Error(payload.detail || "Ошибка обработки");
+        }
+
+        uploadedPosts = payload.posts;
+        fillPostSelect(uploadedPosts, payload.selected_post);
+
+        Plotly.newPlot(chartEl, payload.chart.data, payload.chart.layout, { responsive: true });
+        setStatus(`Диаграмма для поста ${payload.selected_post} построена.`);
+      } catch (err) {
+        setStatus(err.message, true);
+      } finally {
+        buildBtn.disabled = false;
+      }
+    }
+
+    buildBtn.addEventListener("click", async () => {
+      if (fileInput.files.length) {
+        await loadUploadedChart();
+      } else if (postSelect.value) {
+        try {
+          await loadLocalChart(postSelect.value);
+        } catch (err) {
+          setStatus(err.message, true);
+        }
+      }
+    });
+
+    postSelect.addEventListener("change", async () => {
+      if (fileInput.files.length) {
+        await loadUploadedChart();
+      } else if (postSelect.value) {
+        try {
+          await loadLocalChart(postSelect.value);
+        } catch (err) {
+          setStatus(err.message, true);
+        }
+      }
+    });
+
+    fileInput.addEventListener("change", () => {
+      if (fileInput.files.length) {
+        buildBtn.disabled = false;
+        setStatus(`Выбрано файлов: ${fileInput.files.length}. Нажмите «Построить».`);
+      }
+    });
+
+    (async function init() {
+      const initialPosts = {{ posts | tojson }};
+      if (initialPosts.length) {
+        fillPostSelect(initialPosts, initialPosts[0]);
+        try {
+          await loadLocalChart(initialPosts[0]);
+        } catch (err) {
+          setStatus(err.message, true);
+        }
+      }
+    })();
+  </script>
+</body>
+</html>
