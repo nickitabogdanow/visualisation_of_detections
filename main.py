@@ -1,25 +1,37 @@
 from __future__ import annotations
 
+import io
 import json
+from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import HTMLResponse
+import pandas as pd
+from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
+
+import plotly
+import plotly.graph_objects as go
 
 from parser import load_csv_files, parse_csv_content
 from visualization import build_heatmap_figure
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
+PLOTLY_JS = Path(plotly.__path__[0]) / "package_data" / "plotly.min.js"
 
 app = FastAPI(title="IDF Visualisation")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 if (BASE_DIR / "static").exists():
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+
+@app.get("/js/plotly.min.js", include_in_schema=False)
+async def plotly_js() -> FileResponse:
+    return FileResponse(PLOTLY_JS, media_type="application/javascript")
 
 
 def _collect_local_csv_paths() -> list[Path]:
@@ -39,6 +51,64 @@ def _group_uploads(files: list[UploadFile]) -> dict[str, list]:
         post = parsed.metadata.post_number or "unknown"
         grouped.setdefault(post, []).append(parsed)
     return grouped
+
+
+def _parse_chart_ranges(
+    time_start: str | None = None,
+    time_end: str | None = None,
+    freq_min: float | None = None,
+    freq_max: float | None = None,
+) -> dict[str, datetime | float | None]:
+    parsed_start = pd.to_datetime(time_start) if time_start else None
+    parsed_end = pd.to_datetime(time_end) if time_end else None
+
+    if time_start and pd.isna(parsed_start):
+        raise HTTPException(status_code=400, detail="Некорректный формат time_start")
+    if time_end and pd.isna(parsed_end):
+        raise HTTPException(status_code=400, detail="Некорректный формат time_end")
+    if parsed_start is not None and parsed_end is not None and parsed_start > parsed_end:
+        raise HTTPException(
+            status_code=400,
+            detail="Начало временного диапазона должно быть раньше конца",
+        )
+    if freq_min is not None and freq_max is not None and freq_min > freq_max:
+        raise HTTPException(
+            status_code=400,
+            detail="Минимальная частота должна быть меньше или равна максимальной",
+        )
+
+    return {
+        "time_start": parsed_start.to_pydatetime() if parsed_start is not None else None,
+        "time_end": parsed_end.to_pydatetime() if parsed_end is not None else None,
+        "freq_min": freq_min,
+        "freq_max": freq_max,
+    }
+
+
+def _build_chart(
+    files: list,
+    post_number: str,
+    time_start: str | None = None,
+    time_end: str | None = None,
+    freq_min: float | None = None,
+    freq_max: float | None = None,
+):
+    ranges = _parse_chart_ranges(time_start, time_end, freq_min, freq_max)
+    try:
+        return build_heatmap_figure(files, post_number, **ranges)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _html_download_response(fig, post_number: str) -> Response:
+    buffer = io.StringIO()
+    fig.write_html(buffer, include_plotlyjs=True, full_html=True)
+    filename = f"post_{post_number}_heatmap.html"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -70,7 +140,13 @@ async def list_posts() -> dict:
 
 
 @app.get("/api/chart/{post_number}")
-async def chart_from_local(post_number: str) -> dict:
+async def chart_from_local(
+    post_number: str,
+    time_start: str | None = Query(default=None),
+    time_end: str | None = Query(default=None),
+    freq_min: float | None = Query(default=None),
+    freq_max: float | None = Query(default=None),
+) -> dict:
     paths = _collect_local_csv_paths()
     if not paths:
         raise HTTPException(status_code=404, detail="Нет CSV файлов в папке data/")
@@ -79,14 +155,64 @@ async def chart_from_local(post_number: str) -> dict:
     if post_number not in grouped:
         raise HTTPException(status_code=404, detail=f"Пост {post_number} не найден")
 
-    fig = build_heatmap_figure(grouped[post_number], post_number)
+    fig = _build_chart(
+        grouped[post_number],
+        post_number,
+        time_start=time_start,
+        time_end=time_end,
+        freq_min=freq_min,
+        freq_max=freq_max,
+    )
     return json.loads(fig.to_json())
+
+
+@app.post("/api/export/html")
+async def export_chart_html(payload: dict = Body(...)) -> Response:
+    post_number = str(payload.get("post_number") or "chart")
+    data = payload.get("data")
+    layout = payload.get("layout")
+    if not data:
+        raise HTTPException(status_code=400, detail="Нет данных диаграммы для экспорта")
+
+    fig = go.Figure(data=data, layout=layout or {})
+    return _html_download_response(fig, post_number)
+
+
+@app.get("/api/chart/{post_number}/html")
+async def chart_html_from_local(
+    post_number: str,
+    time_start: str | None = Query(default=None),
+    time_end: str | None = Query(default=None),
+    freq_min: float | None = Query(default=None),
+    freq_max: float | None = Query(default=None),
+) -> Response:
+    paths = _collect_local_csv_paths()
+    if not paths:
+        raise HTTPException(status_code=404, detail="Нет CSV файлов в папке data/")
+
+    grouped = load_csv_files(paths)
+    if post_number not in grouped:
+        raise HTTPException(status_code=404, detail=f"Пост {post_number} не найден")
+
+    fig = _build_chart(
+        grouped[post_number],
+        post_number,
+        time_start=time_start,
+        time_end=time_end,
+        freq_min=freq_min,
+        freq_max=freq_max,
+    )
+    return _html_download_response(fig, post_number)
 
 
 @app.post("/api/upload/chart")
 async def chart_from_upload(
     files: list[UploadFile] = File(...),
     post_number: str | None = Query(default=None),
+    time_start: str | None = Query(default=None),
+    time_end: str | None = Query(default=None),
+    freq_min: float | None = Query(default=None),
+    freq_max: float | None = Query(default=None),
 ) -> dict:
     if not files:
         raise HTTPException(status_code=400, detail="Загрузите хотя бы один CSV файл")
@@ -101,9 +227,49 @@ async def chart_from_upload(
             detail=f"Пост {selected} не найден. Доступные: {', '.join(posts)}",
         )
 
-    fig = build_heatmap_figure(grouped[selected], selected)
+    fig = _build_chart(
+        grouped[selected],
+        selected,
+        time_start=time_start,
+        time_end=time_end,
+        freq_min=freq_min,
+        freq_max=freq_max,
+    )
     return {
         "posts": posts,
         "selected_post": selected,
         "chart": json.loads(fig.to_json()),
     }
+
+
+@app.post("/api/upload/chart/html")
+async def chart_html_from_upload(
+    files: list[UploadFile] = File(...),
+    post_number: str | None = Query(default=None),
+    time_start: str | None = Query(default=None),
+    time_end: str | None = Query(default=None),
+    freq_min: float | None = Query(default=None),
+    freq_max: float | None = Query(default=None),
+) -> Response:
+    if not files:
+        raise HTTPException(status_code=400, detail="Загрузите хотя бы один CSV файл")
+
+    grouped = _group_uploads(files)
+    posts = sorted(grouped.keys())
+
+    selected = post_number or posts[0]
+    if selected not in grouped:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Пост {selected} не найден. Доступные: {', '.join(posts)}",
+        )
+
+    fig = _build_chart(
+        grouped[selected],
+        selected,
+        time_start=time_start,
+        time_end=time_end,
+        freq_min=freq_min,
+        freq_max=freq_max,
+    )
+    return _html_download_response(fig, selected)

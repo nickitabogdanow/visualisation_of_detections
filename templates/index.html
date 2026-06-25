@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>IDF — визуализация частот</title>
-  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <style>
     :root {
       color-scheme: light dark;
@@ -78,8 +77,67 @@
 
     input[type="file"],
     select,
-    button {
+    button,
+    input[type="datetime-local"],
+    input[type="number"] {
       font: inherit;
+    }
+
+    input[type="datetime-local"],
+    input[type="number"] {
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      color: var(--text);
+    }
+
+    input[type="number"] {
+      width: 120px;
+    }
+
+    .range-panel {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+    }
+
+    .range-panel h2 {
+      margin: 0 0 12px;
+      font-size: 1rem;
+      font-weight: 600;
+    }
+
+    .range-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: end;
+      margin-bottom: 12px;
+    }
+
+    .range-toggle {
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .range-toggle input {
+      width: auto;
+    }
+
+    .range-fields {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: end;
+    }
+
+    .range-fields.disabled {
+      opacity: 0.5;
+      pointer-events: none;
     }
 
     select {
@@ -103,6 +161,12 @@
     button:disabled {
       opacity: 0.6;
       cursor: not-allowed;
+    }
+
+    button.secondary {
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent);
     }
 
     .hint {
@@ -155,7 +219,47 @@
           </select>
         </label>
         <button id="buildBtn" disabled>Построить</button>
+        <button id="downloadBtn" class="secondary" disabled>Скачать HTML</button>
       </div>
+
+      <div class="range-panel">
+        <h2>Фиксированные диапазоны</h2>
+
+        <div class="range-group">
+          <label class="range-toggle">
+            <input type="checkbox" id="fixTimeCheck">
+            Фиксировать время
+          </label>
+          <div class="range-fields disabled" id="timeRangeFields">
+            <label>
+              Начало
+              <input type="datetime-local" id="timeStartInput" step="600">
+            </label>
+            <label>
+              Конец
+              <input type="datetime-local" id="timeEndInput" step="600">
+            </label>
+          </div>
+        </div>
+
+        <div class="range-group">
+          <label class="range-toggle">
+            <input type="checkbox" id="fixFreqCheck">
+            Фиксировать частоту
+          </label>
+          <div class="range-fields disabled" id="freqRangeFields">
+            <label>
+              Мин, МГц
+              <input type="number" id="freqMinInput" step="10" placeholder="2400">
+            </label>
+            <label>
+              Макс, МГц
+              <input type="number" id="freqMaxInput" step="10" placeholder="2500">
+            </label>
+          </div>
+        </div>
+      </div>
+
       <p class="hint">
         Загрузите один или несколько CSV. Если файлы лежат в папке <code>data/</code>, посты подгрузятся автоматически.
       </p>
@@ -174,25 +278,81 @@
     </div>
   </div>
 
+  <script src="/js/plotly.min.js"></script>
   <script>
     const fileInput = document.getElementById("fileInput");
     const postSelect = document.getElementById("postSelect");
     const buildBtn = document.getElementById("buildBtn");
+    const downloadBtn = document.getElementById("downloadBtn");
     const statusEl = document.getElementById("status");
     const chartEl = document.getElementById("chart");
+    const fixTimeCheck = document.getElementById("fixTimeCheck");
+    const fixFreqCheck = document.getElementById("fixFreqCheck");
+    const timeRangeFields = document.getElementById("timeRangeFields");
+    const freqRangeFields = document.getElementById("freqRangeFields");
+    const timeStartInput = document.getElementById("timeStartInput");
+    const timeEndInput = document.getElementById("timeEndInput");
+    const freqMinInput = document.getElementById("freqMinInput");
+    const freqMaxInput = document.getElementById("freqMaxInput");
 
     let uploadedPosts = [];
+    let lastChart = null;
+
+    function toggleRangeFields(checkbox, fields) {
+      fields.classList.toggle("disabled", !checkbox.checked);
+    }
+
+    fixTimeCheck.addEventListener("change", () => {
+      toggleRangeFields(fixTimeCheck, timeRangeFields);
+    });
+
+    fixFreqCheck.addEventListener("change", () => {
+      toggleRangeFields(fixFreqCheck, freqRangeFields);
+    });
+
+    function buildRangeParams() {
+      const params = new URLSearchParams();
+
+      if (fixTimeCheck.checked) {
+        if (!timeStartInput.value || !timeEndInput.value) {
+          throw new Error("Укажите начало и конец временного диапазона.");
+        }
+        params.set("time_start", timeStartInput.value);
+        params.set("time_end", timeEndInput.value);
+      }
+
+      if (fixFreqCheck.checked) {
+        if (freqMinInput.value === "" || freqMaxInput.value === "") {
+          throw new Error("Укажите минимальную и максимальную частоту.");
+        }
+        params.set("freq_min", freqMinInput.value);
+        params.set("freq_max", freqMaxInput.value);
+      }
+
+      return params;
+    }
+
+    function appendRangeQuery(url) {
+      const params = buildRangeParams();
+      const query = params.toString();
+      return query ? `${url}?${query}` : url;
+    }
 
     function setStatus(text, isError = false) {
       statusEl.textContent = text;
       statusEl.className = isError ? "status error" : "status";
     }
 
+    function setControlsEnabled(enabled) {
+      buildBtn.disabled = !enabled;
+      downloadBtn.disabled = !enabled || !lastChart;
+    }
+
     function fillPostSelect(posts, selected = null) {
       postSelect.innerHTML = "";
       if (!posts.length) {
         postSelect.disabled = true;
-        buildBtn.disabled = true;
+        setControlsEnabled(false);
         postSelect.innerHTML = '<option value="">— нет постов —</option>';
         return;
       }
@@ -203,22 +363,89 @@
         postSelect.appendChild(opt);
       });
       postSelect.disabled = false;
-      buildBtn.disabled = false;
+      setControlsEnabled(true);
       if (selected && posts.includes(selected)) {
         postSelect.value = selected;
       }
     }
 
+    function renderChart(data, layout) {
+      if (typeof Plotly === "undefined") {
+        throw new Error(
+          "Plotly не загрузился. Убедитесь, что установлен пакет plotly (pip install -r requirements.txt) и перезапустите сервер."
+        );
+      }
+      lastChart = { data, layout };
+      Plotly.newPlot(chartEl, data, layout, { responsive: true });
+      downloadBtn.disabled = false;
+    }
+
     async function loadLocalChart(post) {
       setStatus(`Загрузка диаграммы для поста ${post}...`);
-      const resp = await fetch(`/api/chart/${encodeURIComponent(post)}`);
+      const url = appendRangeQuery(`/api/chart/${encodeURIComponent(post)}`);
+      const resp = await fetch(url);
       if (!resp.ok) {
         const err = await resp.json();
         throw new Error(err.detail || "Ошибка загрузки");
       }
       const data = await resp.json();
-      Plotly.newPlot(chartEl, data.data, data.layout, { responsive: true });
+      renderChart(data.data, data.layout);
       setStatus(`Диаграмма для поста ${post} построена (данные из data/).`);
+    }
+
+    function triggerDownload(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+
+    async function downloadHtml() {
+      const post = postSelect.value;
+      if (!post) {
+        setStatus("Выберите номер поста.", true);
+        return;
+      }
+      if (!lastChart) {
+        setStatus("Сначала постройте диаграмму.", true);
+        return;
+      }
+
+      try {
+        setStatus("Подготовка HTML...");
+        downloadBtn.disabled = true;
+
+        const resp = await fetch("/api/export/html", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            post_number: post,
+            data: lastChart.data,
+            layout: lastChart.layout,
+          }),
+        });
+
+        if (!resp.ok) {
+          let detail = "Ошибка скачивания";
+          try {
+            const err = await resp.json();
+            detail = err.detail || detail;
+          } catch (_) {
+            detail = await resp.text() || detail;
+          }
+          throw new Error(detail);
+        }
+
+        const blob = await resp.blob();
+        triggerDownload(blob, `post_${post}_heatmap.html`);
+        setStatus(`HTML для поста ${post} скачан.`);
+      } catch (err) {
+        setStatus(err.message, true);
+      } finally {
+        downloadBtn.disabled = !lastChart;
+      }
     }
 
     async function loadUploadedChart() {
@@ -234,9 +461,15 @@
       }
 
       const post = postSelect.value;
-      const url = post
-        ? `/api/upload/chart?post_number=${encodeURIComponent(post)}`
-        : "/api/upload/chart";
+      let url = post ? "/api/upload/chart" : "/api/upload/chart";
+      const rangeParams = buildRangeParams();
+      if (post) {
+        rangeParams.set("post_number", post);
+      }
+      const query = rangeParams.toString();
+      if (query) {
+        url += `?${query}`;
+      }
 
       setStatus("Обработка файлов...");
       buildBtn.disabled = true;
@@ -251,7 +484,7 @@
         uploadedPosts = payload.posts;
         fillPostSelect(uploadedPosts, payload.selected_post);
 
-        Plotly.newPlot(chartEl, payload.chart.data, payload.chart.layout, { responsive: true });
+        renderChart(payload.chart.data, payload.chart.layout);
         setStatus(`Диаграмма для поста ${payload.selected_post} построена.`);
       } catch (err) {
         setStatus(err.message, true);
@@ -260,33 +493,35 @@
       }
     }
 
+    downloadBtn.addEventListener("click", downloadHtml);
+
     buildBtn.addEventListener("click", async () => {
-      if (fileInput.files.length) {
-        await loadUploadedChart();
-      } else if (postSelect.value) {
-        try {
+      try {
+        if (fileInput.files.length) {
+          await loadUploadedChart();
+        } else if (postSelect.value) {
           await loadLocalChart(postSelect.value);
-        } catch (err) {
-          setStatus(err.message, true);
         }
+      } catch (err) {
+        setStatus(err.message, true);
       }
     });
 
     postSelect.addEventListener("change", async () => {
-      if (fileInput.files.length) {
-        await loadUploadedChart();
-      } else if (postSelect.value) {
-        try {
+      try {
+        if (fileInput.files.length) {
+          await loadUploadedChart();
+        } else if (postSelect.value) {
           await loadLocalChart(postSelect.value);
-        } catch (err) {
-          setStatus(err.message, true);
         }
+      } catch (err) {
+        setStatus(err.message, true);
       }
     });
 
     fileInput.addEventListener("change", () => {
       if (fileInput.files.length) {
-        buildBtn.disabled = false;
+        setControlsEnabled(true);
         setStatus(`Выбрано файлов: ${fileInput.files.length}. Нажмите «Построить».`);
       }
     });
