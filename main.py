@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import json
 import math
+import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -19,15 +21,23 @@ import plotly.graph_objects as go
 from parser import load_csv_files, parse_csv_content
 from visualization import build_heatmap_figure
 
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-PLOTLY_JS = Path(plotly.__path__[0]) / "package_data" / "plotly.min.js"
+IS_FROZEN = getattr(sys, "frozen", False)
+SOURCE_DIR = Path(__file__).resolve().parent
+BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", SOURCE_DIR))
+APP_DIR = Path(sys.executable).resolve().parent if IS_FROZEN else SOURCE_DIR
+
+DATA_DIR = Path(os.getenv("DATA_DIR", APP_DIR / "data"))
+TEMPLATES_DIR = BUNDLE_DIR / "templates"
+PLOTLY_JS = BUNDLE_DIR / "plotly.min.js"
+if not PLOTLY_JS.exists():
+    PLOTLY_JS = Path(plotly.__path__[0]) / "package_data" / "plotly.min.js"
 
 app = FastAPI(title="IDF Visualisation")
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-if (BASE_DIR / "static").exists():
-    app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+STATIC_DIR = BUNDLE_DIR / "static"
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/js/plotly.min.js", include_in_schema=False)
