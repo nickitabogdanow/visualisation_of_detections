@@ -9,6 +9,12 @@ from parser import ParsedCsv
 
 TIME_BIN_MINUTES = 10
 FREQ_BIN_MHZ = 10
+CELL_WIDTH_PX = 56
+CELL_HEIGHT_PX = 28
+GRID_GAP_PX = 2
+MIN_CHART_WIDTH_PX = 800
+MIN_CHART_HEIGHT_PX = 400
+CHART_MARGIN = {"l": 80, "r": 80, "t": 90, "b": 120}
 
 
 def _combine_post_data(files: list[ParsedCsv]) -> pd.DataFrame:
@@ -44,6 +50,7 @@ def build_heatmap_figure(
     time_end: datetime | None = None,
     freq_min: float | None = None,
     freq_max: float | None = None,
+    show_values: bool = True,
 ) -> go.Figure:
     df = _combine_post_data(files)
 
@@ -115,32 +122,69 @@ def build_heatmap_figure(
         f"Начало: {metadata.analysis_start_time}{range_note}</sup>"
     )
 
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=pivot.values,
-            x=time_labels,
-            y=freq_labels,
-            colorscale="YlOrRd",
-            colorbar=dict(title="Кол-во"),
-            hovertemplate=(
-                "Время: %{x}<br>"
-                "Частота: %{y}<br>"
-                "Количество: %{z}<extra></extra>"
-            ),
+    n_cols = len(time_labels)
+    n_rows = len(freq_labels)
+    chart_width = max(MIN_CHART_WIDTH_PX, n_cols * CELL_WIDTH_PX + 160)
+    chart_height = max(MIN_CHART_HEIGHT_PX, n_rows * CELL_HEIGHT_PX + 200)
+
+    heatmap_kwargs: dict = {
+        "z": pivot.values,
+        "x": time_labels,
+        "y": freq_labels,
+        "colorscale": "YlOrRd",
+        "colorbar": dict(title="Кол-во"),
+        "xgap": GRID_GAP_PX,
+        "ygap": GRID_GAP_PX,
+        "hovertemplate": (
+            "Время: %{x}<br>"
+            "Частота: %{y}<br>"
+            "Количество: %{z}<extra></extra>"
+        ),
+    }
+    if show_values:
+        heatmap_kwargs.update(
             text=pivot.values,
             texttemplate="%{text}",
             textfont={"size": 10},
         )
-    )
+    else:
+        heatmap_kwargs["texttemplate"] = ""
+
+    fig = go.Figure(data=go.Heatmap(**heatmap_kwargs))
 
     fig.update_layout(
         title=title,
+        width=chart_width,
+        height=chart_height,
+        autosize=False,
+        dragmode="zoom",
+        plot_bgcolor="#ffffff",
         xaxis_title=f"Время (шаг {TIME_BIN_MINUTES} мин)",
         yaxis_title=f"Частота (шаг {FREQ_BIN_MHZ} МГц)",
-        xaxis={"tickangle": -45, "type": "category"},
-        yaxis={"type": "category"},
-        margin={"l": 80, "r": 40, "t": 90, "b": 120},
-        height=max(400, len(freq_labels) * 28 + 180),
+        xaxis={
+            "tickangle": -45,
+            "type": "category",
+            "fixedrange": False,
+            "automargin": True,
+            "showgrid": True,
+            "gridcolor": "#d0d7de",
+            "gridwidth": 1,
+            "showline": True,
+            "linewidth": 1,
+            "linecolor": "#9aa7b8",
+        },
+        yaxis={
+            "type": "category",
+            "fixedrange": False,
+            "automargin": True,
+            "showgrid": True,
+            "gridcolor": "#d0d7de",
+            "gridwidth": 1,
+            "showline": True,
+            "linewidth": 1,
+            "linecolor": "#9aa7b8",
+        },
+        margin=CHART_MARGIN,
     )
 
     return fig

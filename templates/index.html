@@ -176,9 +176,16 @@
     }
 
     #chart {
-      min-height: 480px;
+      min-width: min(100%, 800px);
+    }
+
+    .chart-scroll {
+      max-height: 75vh;
+      max-width: 100%;
+      overflow: auto;
       border-radius: 8px;
-      overflow: hidden;
+      border: 1px solid var(--border);
+      background: var(--card);
     }
 
     .status {
@@ -197,6 +204,33 @@
       color: var(--muted);
       font-size: 0.85rem;
     }
+
+    .file-list-panel {
+      margin-top: 12px;
+    }
+
+    .file-pagination {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .file-pagination button {
+      padding: 4px 10px;
+      font-size: 0.85rem;
+      background: transparent;
+      color: var(--accent);
+      border: 1px solid var(--accent);
+    }
+
+    .file-pagination button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
@@ -204,6 +238,7 @@
     <h1>Визуализация IDF</h1>
     <p class="subtitle">
       Heatmap: ось X — время (шаг 10 мин), ось Y — частота (шаг 10 МГц), в ячейке — количество частот.
+      Колёсико мыши — зум, перетаскивание — область зума, панель инструментов — сброс и масштаб.
     </p>
 
     <div class="panel">
@@ -220,6 +255,10 @@
         </label>
         <button id="buildBtn" disabled>Построить</button>
         <button id="downloadBtn" class="secondary" disabled>Скачать HTML</button>
+        <label class="range-toggle">
+          <input type="checkbox" id="showValuesCheck" checked>
+          Показывать значения
+        </label>
       </div>
 
       <div class="range-panel">
@@ -263,18 +302,20 @@
       <p class="hint">
         Загрузите один или несколько CSV. Если файлы лежат в папке <code>data/</code>, посты подгрузятся автоматически.
       </p>
-      {% if local_files %}
-      <ul class="file-list">
-        {% for name in local_files %}
-        <li>{{ name }}</li>
-        {% endfor %}
-      </ul>
+      {% if local_files_count > 0 %}
+      <div class="file-list-panel">
+        <p class="hint">Файлы в <code>data/</code>: {{ local_files_count }}</p>
+        <ul class="file-list" id="fileList"></ul>
+        <div class="file-pagination" id="filePagination"></div>
+      </div>
       {% endif %}
       <div id="status" class="status"></div>
     </div>
 
     <div class="panel">
-      <div id="chart"></div>
+      <div class="chart-scroll">
+        <div id="chart"></div>
+      </div>
     </div>
   </div>
 
@@ -294,9 +335,55 @@
     const timeEndInput = document.getElementById("timeEndInput");
     const freqMinInput = document.getElementById("freqMinInput");
     const freqMaxInput = document.getElementById("freqMaxInput");
+    const showValuesCheck = document.getElementById("showValuesCheck");
 
     let uploadedPosts = [];
     let lastChart = null;
+    let fileListPage = 1;
+
+    const fileListEl = document.getElementById("fileList");
+    const filePaginationEl = document.getElementById("filePagination");
+    const FILES_PER_PAGE = 10;
+
+    async function loadFileListPage(page) {
+      if (!fileListEl) {
+        return;
+      }
+
+      const resp = await fetch(`/api/files?page=${page}&per_page=${FILES_PER_PAGE}`);
+      if (!resp.ok) {
+        return;
+      }
+
+      const payload = await resp.json();
+      fileListPage = payload.page;
+
+      fileListEl.innerHTML = payload.files
+        .map((name) => `<li>${name}</li>`)
+        .join("");
+
+      if (!filePaginationEl) {
+        return;
+      }
+
+      if (payload.total_pages <= 1) {
+        filePaginationEl.innerHTML = "";
+        return;
+      }
+
+      filePaginationEl.innerHTML = `
+        <button type="button" id="filePrevBtn" ${payload.page <= 1 ? "disabled" : ""}>Назад</button>
+        <span>Страница ${payload.page} из ${payload.total_pages}</span>
+        <button type="button" id="fileNextBtn" ${payload.page >= payload.total_pages ? "disabled" : ""}>Вперёд</button>
+      `;
+
+      document.getElementById("filePrevBtn")?.addEventListener("click", () => {
+        loadFileListPage(fileListPage - 1);
+      });
+      document.getElementById("fileNextBtn")?.addEventListener("click", () => {
+        loadFileListPage(fileListPage + 1);
+      });
+    }
 
     function toggleRangeFields(checkbox, fields) {
       fields.classList.toggle("disabled", !checkbox.checked);
@@ -310,30 +397,45 @@
       toggleRangeFields(fixFreqCheck, freqRangeFields);
     });
 
-    function buildRangeParams() {
+    showValuesCheck.addEventListener("change", () => {
+      applyShowValues(showValuesCheck.checked);
+    });
+
+    function buildRangeParams(options = {}) {
+      const validate = options.validate !== false;
       const params = new URLSearchParams();
 
       if (fixTimeCheck.checked) {
-        if (!timeStartInput.value || !timeEndInput.value) {
+        if (validate && (!timeStartInput.value || !timeEndInput.value)) {
           throw new Error("Укажите начало и конец временного диапазона.");
         }
-        params.set("time_start", timeStartInput.value);
-        params.set("time_end", timeEndInput.value);
+        if (timeStartInput.value) {
+          params.set("time_start", timeStartInput.value);
+        }
+        if (timeEndInput.value) {
+          params.set("time_end", timeEndInput.value);
+        }
       }
 
       if (fixFreqCheck.checked) {
-        if (freqMinInput.value === "" || freqMaxInput.value === "") {
+        if (validate && (freqMinInput.value === "" || freqMaxInput.value === "")) {
           throw new Error("Укажите минимальную и максимальную частоту.");
         }
-        params.set("freq_min", freqMinInput.value);
-        params.set("freq_max", freqMaxInput.value);
+        if (freqMinInput.value !== "") {
+          params.set("freq_min", freqMinInput.value);
+        }
+        if (freqMaxInput.value !== "") {
+          params.set("freq_max", freqMaxInput.value);
+        }
       }
+
+      params.set("show_values", showValuesCheck.checked ? "true" : "false");
 
       return params;
     }
 
     function appendRangeQuery(url) {
-      const params = buildRangeParams();
+      const params = buildRangeParams({ validate: true });
       const query = params.toString();
       return query ? `${url}?${query}` : url;
     }
@@ -369,15 +471,57 @@
       }
     }
 
+    const plotlyConfig = {
+      responsive: false,
+      scrollZoom: true,
+      displayModeBar: true,
+      displaylogo: false,
+      modeBarButtonsToRemove: ["lasso2d", "select2d"],
+    };
+
     function renderChart(data, layout) {
       if (typeof Plotly === "undefined") {
         throw new Error(
           "Plotly не загрузился. Убедитесь, что установлен пакет plotly (pip install -r requirements.txt) и перезапустите сервер."
         );
       }
-      lastChart = { data, layout };
-      Plotly.newPlot(chartEl, data, layout, { responsive: true });
+      lastChart = {
+        data: JSON.parse(JSON.stringify(data)),
+        layout: JSON.parse(JSON.stringify(layout)),
+        cellValues: null,
+      };
+      Plotly.newPlot(chartEl, data, layout, plotlyConfig).then(() => {
+        lastChart.cellValues = chartEl.data[0].z;
+        applyShowValues(showValuesCheck.checked, false);
+      });
       downloadBtn.disabled = false;
+    }
+
+    function applyShowValues(show, updateStatus = true) {
+      if (!lastChart || !chartEl.data || !chartEl.data.length) {
+        return;
+      }
+
+      const cellValues = lastChart.cellValues ?? lastChart.data[0].z ?? lastChart.data[0].text;
+      if (show && cellValues != null) {
+        Plotly.restyle(chartEl, {
+          text: [cellValues],
+          texttemplate: ["%{text}"],
+        }, [0]);
+        lastChart.data[0].text = cellValues;
+        lastChart.data[0].texttemplate = "%{text}";
+      } else {
+        Plotly.restyle(chartEl, {
+          text: [null],
+          texttemplate: [""],
+        }, [0]);
+        lastChart.data[0].text = null;
+        lastChart.data[0].texttemplate = "";
+      }
+
+      if (updateStatus) {
+        setStatus(show ? "Значения в ячейках показаны." : "Значения в ячейках скрыты.");
+      }
     }
 
     async function loadLocalChart(post) {
@@ -462,7 +606,7 @@
 
       const post = postSelect.value;
       let url = post ? "/api/upload/chart" : "/api/upload/chart";
-      const rangeParams = buildRangeParams();
+      const rangeParams = buildRangeParams({ validate: true });
       if (post) {
         rangeParams.set("post_number", post);
       }
@@ -527,6 +671,8 @@
     });
 
     (async function init() {
+      await loadFileListPage(1);
+
       const initialPosts = {{ posts | tojson }};
       if (initialPosts.length) {
         fillPostSelect(initialPosts, initialPosts[0]);

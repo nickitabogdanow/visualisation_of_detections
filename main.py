@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -92,10 +93,13 @@ def _build_chart(
     time_end: str | None = None,
     freq_min: float | None = None,
     freq_max: float | None = None,
+    show_values: bool = True,
 ):
     ranges = _parse_chart_ranges(time_start, time_end, freq_min, freq_max)
     try:
-        return build_heatmap_figure(files, post_number, **ranges)
+        return build_heatmap_figure(
+            files, post_number, **ranges, show_values=show_values
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -121,10 +125,29 @@ async def index(request: Request) -> HTMLResponse:
         request,
         "index.html",
         {
-            "local_files": [p.name for p in local_files],
+            "local_files_count": len(local_files),
             "posts": posts,
         },
     )
+
+
+@app.get("/api/files")
+async def list_files(
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=10, ge=1, le=100),
+) -> dict:
+    paths = _collect_local_csv_paths()
+    total = len(paths)
+    start = (page - 1) * per_page
+    page_paths = paths[start : start + per_page]
+    total_pages = math.ceil(total / per_page) if total else 0
+    return {
+        "files": [p.name for p in page_paths],
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "total_pages": total_pages,
+    }
 
 
 @app.get("/api/posts")
@@ -146,6 +169,7 @@ async def chart_from_local(
     time_end: str | None = Query(default=None),
     freq_min: float | None = Query(default=None),
     freq_max: float | None = Query(default=None),
+    show_values: bool = Query(default=True),
 ) -> dict:
     paths = _collect_local_csv_paths()
     if not paths:
@@ -162,6 +186,7 @@ async def chart_from_local(
         time_end=time_end,
         freq_min=freq_min,
         freq_max=freq_max,
+        show_values=show_values,
     )
     return json.loads(fig.to_json())
 
@@ -185,6 +210,7 @@ async def chart_html_from_local(
     time_end: str | None = Query(default=None),
     freq_min: float | None = Query(default=None),
     freq_max: float | None = Query(default=None),
+    show_values: bool = Query(default=True),
 ) -> Response:
     paths = _collect_local_csv_paths()
     if not paths:
@@ -201,6 +227,7 @@ async def chart_html_from_local(
         time_end=time_end,
         freq_min=freq_min,
         freq_max=freq_max,
+        show_values=show_values,
     )
     return _html_download_response(fig, post_number)
 
@@ -213,6 +240,7 @@ async def chart_from_upload(
     time_end: str | None = Query(default=None),
     freq_min: float | None = Query(default=None),
     freq_max: float | None = Query(default=None),
+    show_values: bool = Query(default=True),
 ) -> dict:
     if not files:
         raise HTTPException(status_code=400, detail="Загрузите хотя бы один CSV файл")
@@ -234,6 +262,7 @@ async def chart_from_upload(
         time_end=time_end,
         freq_min=freq_min,
         freq_max=freq_max,
+        show_values=show_values,
     )
     return {
         "posts": posts,
@@ -250,6 +279,7 @@ async def chart_html_from_upload(
     time_end: str | None = Query(default=None),
     freq_min: float | None = Query(default=None),
     freq_max: float | None = Query(default=None),
+    show_values: bool = Query(default=True),
 ) -> Response:
     if not files:
         raise HTTPException(status_code=400, detail="Загрузите хотя бы один CSV файл")
@@ -271,5 +301,6 @@ async def chart_html_from_upload(
         time_end=time_end,
         freq_min=freq_min,
         freq_max=freq_max,
+        show_values=show_values,
     )
     return _html_download_response(fig, selected)
