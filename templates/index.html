@@ -238,7 +238,7 @@
     <h1>Визуализация IDF</h1>
     <p class="subtitle">
       Heatmap: ось X — время (шаг 10 мин), ось Y — частота (шаг 10 МГц), в ячейке — количество частот.
-      Колёсико мыши — зум, перетаскивание — область зума, панель инструментов — сброс и масштаб.
+      Перетаскивание — область зума, панель инструментов — сброс и масштаб.
     </p>
 
     <div class="panel">
@@ -473,7 +473,7 @@
 
     const plotlyConfig = {
       responsive: false,
-      scrollZoom: true,
+      scrollZoom: false,
       displayModeBar: true,
       displaylogo: false,
       modeBarButtonsToRemove: ["lasso2d", "select2d"],
