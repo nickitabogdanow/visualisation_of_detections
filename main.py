@@ -104,12 +104,67 @@ def _build_chart(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _html_download_response(fig, post_number: str) -> Response:
+def _html_download_response(
+    fig,
+    post_number: str,
+    *,
+    show_values: bool = True,
+) -> Response:
+    trace = fig.data[0]
+    z = trace.z
+    cell_values = z.tolist() if hasattr(z, "tolist") else z
+
+    if show_values:
+        trace.text = cell_values
+        trace.texttemplate = "%{text}"
+    else:
+        trace.text = None
+        trace.texttemplate = ""
+
     buffer = io.StringIO()
-    fig.write_html(buffer, include_plotlyjs=True, full_html=True)
+    fig.write_html(
+        buffer,
+        include_plotlyjs=True,
+        full_html=True,
+        div_id="idf-heatmap",
+    )
+    html = buffer.getvalue()
+
+    checked = "checked" if show_values else ""
+    toolbar = (
+        '<div id="idf-toolbar" style="font-family:sans-serif;padding:12px 16px;'
+        'background:#f4f6f8;border-bottom:1px solid #d8dee6;">'
+        '<label style="cursor:pointer;">'
+        f'<input type="checkbox" id="idf-show-values" {checked}> '
+        "Показывать значения в ячейках"
+        "</label></div>"
+    )
+    toggle_script = f"""
+<script>
+(function() {{
+  const cellValues = {json.dumps(cell_values)};
+  const plotDiv = document.getElementById("idf-heatmap");
+  const toggle = document.getElementById("idf-show-values");
+  if (!plotDiv || !toggle || typeof Plotly === "undefined") {{
+    return;
+  }}
+  toggle.addEventListener("change", function() {{
+    if (toggle.checked) {{
+      Plotly.restyle(plotDiv, {{text: [cellValues], texttemplate: ["%{{text}}"]}}, [0]);
+    }} else {{
+      Plotly.restyle(plotDiv, {{text: [null], texttemplate: [""]}}, [0]);
+    }}
+  }});
+}})();
+</script>
+"""
+    if "<body>" in html:
+        html = html.replace("<body>", f"<body>{toolbar}", 1)
+    html = html.replace("</body>", toggle_script + "</body>")
+
     filename = f"post_{post_number}_heatmap.html"
     return Response(
-        content=buffer.getvalue(),
+        content=html,
         media_type="text/html; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
@@ -200,7 +255,8 @@ async def export_chart_html(payload: dict = Body(...)) -> Response:
         raise HTTPException(status_code=400, detail="Нет данных диаграммы для экспорта")
 
     fig = go.Figure(data=data, layout=layout or {})
-    return _html_download_response(fig, post_number)
+    show_values = bool(payload.get("show_values", True))
+    return _html_download_response(fig, post_number, show_values=show_values)
 
 
 @app.get("/api/chart/{post_number}/html")
@@ -229,7 +285,7 @@ async def chart_html_from_local(
         freq_max=freq_max,
         show_values=show_values,
     )
-    return _html_download_response(fig, post_number)
+    return _html_download_response(fig, post_number, show_values=show_values)
 
 
 @app.post("/api/upload/chart")
@@ -303,4 +359,4 @@ async def chart_html_from_upload(
         freq_max=freq_max,
         show_values=show_values,
     )
-    return _html_download_response(fig, selected)
+    return _html_download_response(fig, selected, show_values=show_values)
