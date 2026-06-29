@@ -15,6 +15,7 @@ GRID_GAP_PX = 2
 MIN_CHART_WIDTH_PX = 800
 MIN_CHART_HEIGHT_PX = 400
 CHART_MARGIN = {"l": 80, "r": 80, "t": 90, "b": 120}
+MAX_HEATMAP_CELLS = 250_000
 
 
 def _combine_post_data(files: list[ParsedCsv]) -> pd.DataFrame:
@@ -78,14 +79,7 @@ def build_heatmap_figure(
     if df.empty:
         pivot = pd.DataFrame()
     else:
-        pivot = (
-            df.groupby(["freq_bin", "time_bin"])
-            .size()
-            .reset_index(name="count")
-            .pivot(index="freq_bin", columns="time_bin", values="count")
-            .fillna(0)
-            .astype(int)
-        )
+        pivot = pd.crosstab(df["freq_bin"], df["time_bin"]).astype(int)
 
     use_fixed_time = time_start is not None and time_end is not None
     use_fixed_freq = freq_min is not None and freq_max is not None
@@ -111,6 +105,15 @@ def build_heatmap_figure(
         )
     else:
         freq_bins = []
+
+    grid_cells = len(time_bins) * len(freq_bins)
+    if grid_cells > MAX_HEATMAP_CELLS:
+        raise ValueError(
+            "Сетка слишком большая: "
+            f"{len(time_bins)} временных интервалов × {len(freq_bins)} частотных "
+            f"интервалов = {grid_cells} ячеек. "
+            "Увеличьте шаг сетки или сузьте диапазон."
+        )
 
     if len(time_bins) and len(freq_bins):
         pivot = pivot.reindex(index=freq_bins, columns=time_bins, fill_value=0).astype(int)
@@ -157,15 +160,8 @@ def build_heatmap_figure(
             "Частота: %{y}<br>"
             "Количество: %{z}<extra></extra>"
         ),
+        "texttemplate": "",
     }
-    if show_values:
-        heatmap_kwargs.update(
-            text=pivot.values,
-            texttemplate="%{text}",
-            textfont={"size": 10},
-        )
-    else:
-        heatmap_kwargs["texttemplate"] = ""
 
     fig = go.Figure(data=go.Heatmap(**heatmap_kwargs))
 

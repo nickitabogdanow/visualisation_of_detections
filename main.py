@@ -18,7 +18,7 @@ from starlette.requests import Request
 import plotly
 import plotly.graph_objects as go
 
-from parser import load_csv_files, parse_csv_content
+from parser import ParsedCsv, load_csv_files, parse_csv_content
 from visualization import FREQ_BIN_MHZ, TIME_BIN_MINUTES, build_heatmap_figure
 
 IS_FROZEN = getattr(sys, "frozen", False)
@@ -39,6 +39,11 @@ STATIC_DIR = BUNDLE_DIR / "static"
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+CsvSignature = tuple[tuple[str, int, int], ...]
+
+_local_csv_cache_signature: CsvSignature | None = None
+_local_csv_cache: dict[str, list[ParsedCsv]] | None = None
+
 
 @app.get("/js/plotly.min.js", include_in_schema=False)
 async def plotly_js() -> FileResponse:
@@ -49,6 +54,24 @@ def _collect_local_csv_paths() -> list[Path]:
     if not DATA_DIR.exists():
         return []
     return sorted(DATA_DIR.glob("*.csv"))
+
+
+def _local_csv_signature(paths: list[Path]) -> CsvSignature:
+    return tuple(
+        (str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in paths
+    )
+
+
+def _load_local_csv_files(paths: list[Path]) -> dict[str, list[ParsedCsv]]:
+    global _local_csv_cache, _local_csv_cache_signature
+
+    signature = _local_csv_signature(paths)
+    if _local_csv_cache is not None and signature == _local_csv_cache_signature:
+        return _local_csv_cache
+
+    _local_csv_cache = load_csv_files(paths)
+    _local_csv_cache_signature = signature
+    return _local_csv_cache
 
 
 def _group_uploads(files: list[UploadFile]) -> dict[str, list]:
@@ -192,7 +215,7 @@ async def index(request: Request) -> HTMLResponse:
     local_files = _collect_local_csv_paths()
     posts: list[str] = []
     if local_files:
-        posts = sorted(load_csv_files(local_files).keys())
+        posts = sorted(_load_local_csv_files(local_files).keys())
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -227,7 +250,7 @@ async def list_posts() -> dict:
     paths = _collect_local_csv_paths()
     if not paths:
         return {"posts": [], "files": []}
-    grouped = load_csv_files(paths)
+    grouped = _load_local_csv_files(paths)
     return {
         "posts": sorted(grouped.keys()),
         "files": [p.name for p in paths],
@@ -244,12 +267,12 @@ async def chart_from_local(
     show_values: bool = Query(default=True),
     time_bin_minutes: int = Query(default=TIME_BIN_MINUTES, ge=1),
     freq_bin_mhz: int = Query(default=FREQ_BIN_MHZ, ge=1),
-) -> dict:
+) -> Response:
     paths = _collect_local_csv_paths()
     if not paths:
         raise HTTPException(status_code=404, detail="Нет CSV файлов в папке data/")
 
-    grouped = load_csv_files(paths)
+    grouped = _load_local_csv_files(paths)
     if post_number not in grouped:
         raise HTTPException(status_code=404, detail=f"Пост {post_number} не найден")
 
@@ -264,7 +287,7 @@ async def chart_from_local(
         time_bin_minutes=time_bin_minutes,
         freq_bin_mhz=freq_bin_mhz,
     )
-    return json.loads(fig.to_json())
+    return Response(content=fig.to_json(), media_type="application/json")
 
 
 @app.post("/api/export/html")
@@ -295,7 +318,7 @@ async def chart_html_from_local(
     if not paths:
         raise HTTPException(status_code=404, detail="Нет CSV файлов в папке data/")
 
-    grouped = load_csv_files(paths)
+    grouped = _load_local_csv_files(paths)
     if post_number not in grouped:
         raise HTTPException(status_code=404, detail=f"Пост {post_number} не найден")
 
@@ -324,7 +347,7 @@ async def chart_from_upload(
     show_values: bool = Query(default=True),
     time_bin_minutes: int = Query(default=TIME_BIN_MINUTES, ge=1),
     freq_bin_mhz: int = Query(default=FREQ_BIN_MHZ, ge=1),
-) -> dict:
+) -> Response:
     if not files:
         raise HTTPException(status_code=400, detail="Загрузите хотя бы один CSV файл")
 
@@ -349,11 +372,14 @@ async def chart_from_upload(
         time_bin_minutes=time_bin_minutes,
         freq_bin_mhz=freq_bin_mhz,
     )
-    return {
-        "posts": posts,
-        "selected_post": selected,
-        "chart": json.loads(fig.to_json()),
-    }
+    content = (
+        "{"
+        f'"posts":{json.dumps(posts)},'
+        f'"selected_post":{json.dumps(selected)},'
+        f'"chart":{fig.to_json()}'
+        "}"
+    )
+    return Response(content=content, media_type="application/json")
 
 
 @app.post("/api/upload/chart/html")

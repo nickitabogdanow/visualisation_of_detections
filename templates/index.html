@@ -528,12 +528,12 @@
         );
       }
       lastChart = {
-        data: JSON.parse(JSON.stringify(data)),
-        layout: JSON.parse(JSON.stringify(layout)),
-        cellValues: null,
+        data,
+        layout,
+        cellValues: data[0]?.z ?? null,
       };
       Plotly.newPlot(chartEl, data, layout, plotlyConfig).then(() => {
-        lastChart.cellValues = chartEl.data[0].z;
+        lastChart.cellValues = chartEl.data[0]?.z ?? lastChart.cellValues;
         applyShowValues(showValuesCheck.checked, false);
       });
       downloadBtn.disabled = false;
