@@ -260,6 +260,14 @@
           <input type="checkbox" id="showValuesCheck" checked>
           Показывать значения
         </label>
+        <label class="range-toggle">
+          <input type="checkbox" id="hideZeroRowsCheck">
+          Скрывать нулевые частоты
+        </label>
+        <label class="range-toggle">
+          <input type="checkbox" id="hideZeroColumnsCheck">
+          Скрывать нулевое время
+        </label>
       </div>
 
       <div class="range-panel">
@@ -352,6 +360,8 @@
     const freqMinInput = document.getElementById("freqMinInput");
     const freqMaxInput = document.getElementById("freqMaxInput");
     const showValuesCheck = document.getElementById("showValuesCheck");
+    const hideZeroRowsCheck = document.getElementById("hideZeroRowsCheck");
+    const hideZeroColumnsCheck = document.getElementById("hideZeroColumnsCheck");
     const timeStepInput = document.getElementById("timeStepInput");
     const freqStepInput = document.getElementById("freqStepInput");
 
@@ -417,7 +427,23 @@
     });
 
     showValuesCheck.addEventListener("change", () => {
-      applyShowValues(showValuesCheck.checked);
+      applyChartOptions(showValuesCheck.checked ? "Значения в ячейках показаны." : "Значения в ячейках скрыты.");
+    });
+
+    hideZeroRowsCheck.addEventListener("change", () => {
+      applyChartOptions(
+        hideZeroRowsCheck.checked
+          ? "Нулевые строки с частотами скрыты."
+          : "Нулевые строки с частотами показаны."
+      );
+    });
+
+    hideZeroColumnsCheck.addEventListener("change", () => {
+      applyChartOptions(
+        hideZeroColumnsCheck.checked
+          ? "Нулевые столбцы со временем скрыты."
+          : "Нулевые столбцы со временем показаны."
+      );
     });
 
     function readPositiveInteger(input, fieldName) {
@@ -522,6 +548,118 @@
       modeBarButtonsToRemove: ["lasso2d", "select2d"],
     };
 
+    function decodePlotlyArray(value) {
+      if (Array.isArray(value)) {
+        return value.map((row) => Array.isArray(row) ? [...row] : [row]);
+      }
+      if (!value || typeof value !== "object" || !value.bdata || !value.dtype || !value.shape) {
+        return [];
+      }
+
+      const constructors = {
+        i1: Int8Array,
+        u1: Uint8Array,
+        i2: Int16Array,
+        u2: Uint16Array,
+        i4: Int32Array,
+        u4: Uint32Array,
+        f4: Float32Array,
+        f8: Float64Array,
+      };
+      const TypedArray = constructors[value.dtype];
+      if (!TypedArray) {
+        return [];
+      }
+
+      const binary = atob(value.bdata);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+
+      const flat = new TypedArray(bytes.buffer);
+      const [rows, columns] = String(value.shape)
+        .split(",")
+        .map((part) => Number(part.trim()));
+
+      if (!Number.isFinite(rows) || !Number.isFinite(columns) || rows <= 0 || columns <= 0) {
+        return [];
+      }
+
+      return Array.from({ length: rows }, (_, rowIndex) => (
+        Array.from(flat.slice(rowIndex * columns, (rowIndex + 1) * columns))
+      ));
+    }
+
+    function cloneTrace(trace) {
+      const z = decodePlotlyArray(trace.z);
+      return {
+        ...trace,
+        x: [...(trace.x ?? [])],
+        y: [...(trace.y ?? [])],
+        z,
+        text: null,
+        texttemplate: "",
+      };
+    }
+
+    function isNonZero(value) {
+      return Number(value) !== 0;
+    }
+
+    function buildFilteredChartData(showValues, hideZeroRows, hideZeroColumns) {
+      const baseTrace = lastChart.baseData[0];
+      const baseX = baseTrace.x ?? [];
+      const baseY = baseTrace.y ?? [];
+      const baseZ = baseTrace.z ?? [];
+
+      const rowIndices = baseY
+        .map((_, index) => index)
+        .filter((index) => !hideZeroRows || (baseZ[index] ?? []).some(isNonZero));
+
+      const colIndices = baseX
+        .map((_, index) => index)
+        .filter((index) => (
+          !hideZeroColumns || baseZ.some((row) => isNonZero((row ?? [])[index]))
+        ));
+
+      const z = rowIndices.map((rowIndex) => (
+        colIndices.map((colIndex) => (baseZ[rowIndex] ?? [])[colIndex] ?? 0)
+      ));
+
+      const trace = {
+        ...baseTrace,
+        x: colIndices.map((index) => baseX[index]),
+        y: rowIndices.map((index) => baseY[index]),
+        z,
+        text: showValues ? z : null,
+        texttemplate: showValues ? "%{text}" : "",
+        textfont: showValues ? { size: 10 } : undefined,
+      };
+
+      return [trace, ...lastChart.baseData.slice(1)];
+    }
+
+    function applyChartOptions(statusText = null) {
+      if (!lastChart) {
+        return;
+      }
+
+      const data = buildFilteredChartData(
+        showValuesCheck.checked,
+        hideZeroRowsCheck.checked,
+        hideZeroColumnsCheck.checked
+      );
+      lastChart.data = data;
+      lastChart.layout = lastChart.baseLayout;
+      lastChart.cellValues = data[0]?.z ?? null;
+
+      Plotly.react(chartEl, data, lastChart.layout, plotlyConfig);
+      if (statusText) {
+        setStatus(statusText);
+      }
+    }
+
     function renderChart(data, layout) {
       if (typeof Plotly === "undefined") {
         throw new Error(
@@ -529,42 +667,14 @@
         );
       }
       lastChart = {
-        data,
-        layout,
-        cellValues: data[0]?.z ?? null,
+        baseData: data.map(cloneTrace),
+        baseLayout: { ...layout },
+        data: null,
+        layout: null,
+        cellValues: null,
       };
-      Plotly.newPlot(chartEl, data, layout, plotlyConfig).then(() => {
-        lastChart.cellValues = chartEl.data[0]?.z ?? lastChart.cellValues;
-        applyShowValues(showValuesCheck.checked, false);
-      });
+      applyChartOptions();
       downloadBtn.disabled = false;
-    }
-
-    function applyShowValues(show, updateStatus = true) {
-      if (!lastChart || !chartEl.data || !chartEl.data.length) {
-        return;
-      }
-
-      const cellValues = lastChart.cellValues ?? lastChart.data[0].z ?? lastChart.data[0].text;
-      if (show && cellValues != null) {
-        Plotly.restyle(chartEl, {
-          text: [cellValues],
-          texttemplate: ["%{text}"],
-        }, [0]);
-        lastChart.data[0].text = cellValues;
-        lastChart.data[0].texttemplate = "%{text}";
-      } else {
-        Plotly.restyle(chartEl, {
-          text: [null],
-          texttemplate: [""],
-        }, [0]);
-        lastChart.data[0].text = null;
-        lastChart.data[0].texttemplate = "";
-      }
-
-      if (updateStatus) {
-        setStatus(show ? "Значения в ячейках показаны." : "Значения в ячейках скрыты.");
-      }
     }
 
     async function loadLocalChart(post) {
@@ -609,9 +719,11 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             post_number: post,
-            data: lastChart.data,
-            layout: lastChart.layout,
+            data: lastChart.baseData,
+            layout: lastChart.baseLayout,
             show_values: showValuesCheck.checked,
+            hide_zero_rows: hideZeroRowsCheck.checked,
+            hide_zero_columns: hideZeroColumnsCheck.checked,
           }),
         });
 

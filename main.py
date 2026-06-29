@@ -180,17 +180,15 @@ def _html_download_response(
     post_number: str,
     *,
     show_values: bool = True,
+    hide_zero_rows: bool = False,
+    hide_zero_columns: bool = False,
 ) -> Response:
     trace = fig.data[0]
     z = trace.z
     cell_values = z.tolist() if hasattr(z, "tolist") else z
 
-    if show_values:
-        trace.text = cell_values
-        trace.texttemplate = "%{text}"
-    else:
-        trace.text = None
-        trace.texttemplate = ""
+    trace.text = None
+    trace.texttemplate = ""
 
     buffer = io.StringIO()
     fig.write_html(
@@ -201,13 +199,23 @@ def _html_download_response(
     )
     html = buffer.getvalue()
 
-    checked = "checked" if show_values else ""
+    values_checked = "checked" if show_values else ""
+    rows_checked = "checked" if hide_zero_rows else ""
+    columns_checked = "checked" if hide_zero_columns else ""
     toolbar = (
         '<div id="idf-toolbar" style="font-family:sans-serif;padding:12px 16px;'
         'background:#f4f6f8;border-bottom:1px solid #d8dee6;">'
-        '<label style="cursor:pointer;">'
-        f'<input type="checkbox" id="idf-show-values" {checked}> '
+        '<label style="cursor:pointer;margin-right:16px;">'
+        f'<input type="checkbox" id="idf-show-values" {values_checked}> '
         "Показывать значения в ячейках"
+        "</label>"
+        '<label style="cursor:pointer;margin-right:16px;">'
+        f'<input type="checkbox" id="idf-hide-zero-rows" {rows_checked}> '
+        "Скрывать нулевые частоты"
+        "</label>"
+        '<label style="cursor:pointer;">'
+        f'<input type="checkbox" id="idf-hide-zero-columns" {columns_checked}> '
+        "Скрывать нулевое время"
         "</label></div>"
     )
     toggle_script = f"""
@@ -215,17 +223,64 @@ def _html_download_response(
 (function() {{
   const cellValues = {json.dumps(cell_values)};
   const plotDiv = document.getElementById("idf-heatmap");
-  const toggle = document.getElementById("idf-show-values");
-  if (!plotDiv || !toggle || typeof Plotly === "undefined") {{
+  const valuesToggle = document.getElementById("idf-show-values");
+  const rowsToggle = document.getElementById("idf-hide-zero-rows");
+  const columnsToggle = document.getElementById("idf-hide-zero-columns");
+  if (!plotDiv || !valuesToggle || !rowsToggle || !columnsToggle || typeof Plotly === "undefined") {{
     return;
   }}
-  toggle.addEventListener("change", function() {{
-    if (toggle.checked) {{
-      Plotly.restyle(plotDiv, {{text: [cellValues], texttemplate: ["%{{text}}"]}}, [0]);
-    }} else {{
-      Plotly.restyle(plotDiv, {{text: [null], texttemplate: [""]}}, [0]);
-    }}
-  }});
+
+  const baseTrace = {{
+    ...plotDiv.data[0],
+    x: [...(plotDiv.data[0].x || [])],
+    y: [...(plotDiv.data[0].y || [])],
+    z: cellValues,
+    text: null,
+    texttemplate: "",
+  }};
+  const baseLayout = {{ ...plotDiv.layout }};
+
+  function isNonZero(value) {{
+    return Number(value) !== 0;
+  }}
+
+  function buildFilteredTrace() {{
+    const baseX = baseTrace.x || [];
+    const baseY = baseTrace.y || [];
+    const baseZ = baseTrace.z || [];
+
+    const rowIndices = baseY
+      .map((_, index) => index)
+      .filter((index) => !rowsToggle.checked || (baseZ[index] || []).some(isNonZero));
+    const colIndices = baseX
+      .map((_, index) => index)
+      .filter((index) => (
+        !columnsToggle.checked || baseZ.some((row) => isNonZero((row || [])[index]))
+      ));
+
+    const z = rowIndices.map((rowIndex) => (
+      colIndices.map((colIndex) => (baseZ[rowIndex] || [])[colIndex] || 0)
+    ));
+
+    return {{
+      ...baseTrace,
+      x: colIndices.map((index) => baseX[index]),
+      y: rowIndices.map((index) => baseY[index]),
+      z,
+      text: valuesToggle.checked ? z : null,
+      texttemplate: valuesToggle.checked ? "%{{text}}" : "",
+      textfont: valuesToggle.checked ? {{ size: 10 }} : undefined,
+    }};
+  }}
+
+  function applyOptions() {{
+    Plotly.react(plotDiv, [buildFilteredTrace()], baseLayout);
+  }}
+
+  valuesToggle.addEventListener("change", applyOptions);
+  rowsToggle.addEventListener("change", applyOptions);
+  columnsToggle.addEventListener("change", applyOptions);
+  applyOptions();
 }})();
 </script>
 """
@@ -331,7 +386,15 @@ async def export_chart_html(payload: dict = Body(...)) -> Response:
 
     fig = go.Figure(data=data, layout=layout or {})
     show_values = bool(payload.get("show_values", True))
-    return _html_download_response(fig, post_number, show_values=show_values)
+    hide_zero_rows = bool(payload.get("hide_zero_rows", False))
+    hide_zero_columns = bool(payload.get("hide_zero_columns", False))
+    return _html_download_response(
+        fig,
+        post_number,
+        show_values=show_values,
+        hide_zero_rows=hide_zero_rows,
+        hide_zero_columns=hide_zero_columns,
+    )
 
 
 @app.get("/api/chart/{post_number}/html")
@@ -364,7 +427,13 @@ async def chart_html_from_local(
         time_bin_minutes=time_bin_minutes,
         freq_bin_mhz=freq_bin_mhz,
     )
-    return _html_download_response(fig, post_number, show_values=show_values)
+    return _html_download_response(
+        fig,
+        post_number,
+        show_values=show_values,
+        hide_zero_rows=hide_zero_rows,
+        hide_zero_columns=hide_zero_columns,
+    )
 
 
 @app.post("/api/upload/chart")
@@ -427,6 +496,8 @@ async def chart_html_from_upload(
     freq_min: float | None = Query(default=None),
     freq_max: float | None = Query(default=None),
     show_values: bool = Query(default=True),
+    hide_zero_rows: bool = Query(default=False),
+    hide_zero_columns: bool = Query(default=False),
     time_bin_minutes: int = Query(default=TIME_BIN_MINUTES, ge=1),
     freq_bin_mhz: int = Query(default=FREQ_BIN_MHZ, ge=1),
 ) -> Response:
@@ -459,4 +530,10 @@ async def chart_html_from_upload(
         time_bin_minutes=time_bin_minutes,
         freq_bin_mhz=freq_bin_mhz,
     )
-    return _html_download_response(fig, selected, show_values=show_values)
+    return _html_download_response(
+        fig,
+        selected,
+        show_values=show_values,
+        hide_zero_rows=hide_zero_rows,
+        hide_zero_columns=hide_zero_columns,
+    )
