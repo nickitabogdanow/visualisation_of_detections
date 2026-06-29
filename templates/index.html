@@ -362,6 +362,7 @@
     const fileListEl = document.getElementById("fileList");
     const filePaginationEl = document.getElementById("filePagination");
     const FILES_PER_PAGE = 10;
+    const MAX_UPLOAD_FILES = 5000;
 
     async function loadFileListPage(page) {
       if (!fileListEl) {
@@ -641,6 +642,10 @@
         setStatus("Выберите CSV файлы.", true);
         return;
       }
+      if (files.length > MAX_UPLOAD_FILES) {
+        setStatus(`Можно загрузить не больше ${MAX_UPLOAD_FILES} файлов за раз.`, true);
+        return;
+      }
 
       const form = new FormData();
       for (const file of files) {
@@ -708,6 +713,11 @@
 
     fileInput.addEventListener("change", () => {
       if (fileInput.files.length) {
+        if (fileInput.files.length > MAX_UPLOAD_FILES) {
+          setControlsEnabled(false);
+          setStatus(`Выбрано файлов: ${fileInput.files.length}. Максимум — ${MAX_UPLOAD_FILES}.`, true);
+          return;
+        }
         setControlsEnabled(true);
         setStatus(`Выбрано файлов: ${fileInput.files.length}. Нажмите «Построить».`);
       }

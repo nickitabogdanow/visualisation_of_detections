@@ -10,10 +10,12 @@ from pathlib import Path
 
 import pandas as pd
 from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.routing import APIRoute
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
+from starlette.responses import Response as StarletteResponse
 
 import plotly
 import plotly.graph_objects as go
@@ -32,7 +34,36 @@ PLOTLY_JS = BUNDLE_DIR / "plotly.min.js"
 if not PLOTLY_JS.exists():
     PLOTLY_JS = Path(plotly.__path__[0]) / "package_data" / "plotly.min.js"
 
+MAX_UPLOAD_FILES = 5_000
+
+
+class LargeUploadRoute(APIRoute):
+    def get_route_handler(self):
+        original_route_handler = super().get_route_handler()
+
+        async def custom_route_handler(request: Request) -> StarletteResponse:
+            original_get_form = request._get_form
+
+            async def form_with_file_limit(
+                *,
+                max_files: int | float = MAX_UPLOAD_FILES,
+                max_fields: int | float = MAX_UPLOAD_FILES,
+                max_part_size: int = 1024 * 1024,
+            ):
+                return await original_get_form(
+                    max_files=max_files,
+                    max_fields=max_fields,
+                    max_part_size=max_part_size,
+                )
+
+            request.form = form_with_file_limit
+            return await original_route_handler(request)
+
+        return custom_route_handler
+
+
 app = FastAPI(title="IDF Visualisation")
+app.router.route_class = LargeUploadRoute
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 STATIC_DIR = BUNDLE_DIR / "static"
@@ -350,6 +381,11 @@ async def chart_from_upload(
 ) -> Response:
     if not files:
         raise HTTPException(status_code=400, detail="Загрузите хотя бы один CSV файл")
+    if len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Можно загрузить не больше {MAX_UPLOAD_FILES} файлов за раз",
+        )
 
     grouped = _group_uploads(files)
     posts = sorted(grouped.keys())
@@ -396,6 +432,11 @@ async def chart_html_from_upload(
 ) -> Response:
     if not files:
         raise HTTPException(status_code=400, detail="Загрузите хотя бы один CSV файл")
+    if len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Можно загрузить не больше {MAX_UPLOAD_FILES} файлов за раз",
+        )
 
     grouped = _group_uploads(files)
     posts = sorted(grouped.keys())
