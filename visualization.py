@@ -22,24 +22,26 @@ def _combine_post_data(files: list[ParsedCsv]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def _floor_freq(freq: float) -> float:
-    return (freq // FREQ_BIN_MHZ) * FREQ_BIN_MHZ
+def _floor_freq(freq: float, freq_bin_mhz: int) -> float:
+    return (freq // freq_bin_mhz) * freq_bin_mhz
 
 
-def _build_time_bins(start: datetime, end: datetime) -> pd.DatetimeIndex:
-    start_bin = pd.Timestamp(start).floor(f"{TIME_BIN_MINUTES}min")
-    end_bin = pd.Timestamp(end).floor(f"{TIME_BIN_MINUTES}min")
+def _build_time_bins(
+    start: datetime, end: datetime, time_bin_minutes: int
+) -> pd.DatetimeIndex:
+    start_bin = pd.Timestamp(start).floor(f"{time_bin_minutes}min")
+    end_bin = pd.Timestamp(end).floor(f"{time_bin_minutes}min")
     if start_bin > end_bin:
         raise ValueError("Начало временного диапазона должно быть раньше конца.")
-    return pd.date_range(start=start_bin, end=end_bin, freq=f"{TIME_BIN_MINUTES}min")
+    return pd.date_range(start=start_bin, end=end_bin, freq=f"{time_bin_minutes}min")
 
 
-def _build_freq_bins(freq_min: float, freq_max: float) -> list[float]:
-    min_bin = _floor_freq(freq_min)
-    max_bin = _floor_freq(freq_max)
+def _build_freq_bins(freq_min: float, freq_max: float, freq_bin_mhz: int) -> list[float]:
+    min_bin = _floor_freq(freq_min, freq_bin_mhz)
+    max_bin = _floor_freq(freq_max, freq_bin_mhz)
     if min_bin > max_bin:
         raise ValueError("Минимальная частота должна быть меньше или равна максимальной.")
-    return list(range(int(max_bin), int(min_bin) - FREQ_BIN_MHZ, -FREQ_BIN_MHZ))
+    return list(range(int(max_bin), int(min_bin) - freq_bin_mhz, -freq_bin_mhz))
 
 
 def build_heatmap_figure(
@@ -51,7 +53,14 @@ def build_heatmap_figure(
     freq_min: float | None = None,
     freq_max: float | None = None,
     show_values: bool = True,
+    time_bin_minutes: int = TIME_BIN_MINUTES,
+    freq_bin_mhz: int = FREQ_BIN_MHZ,
 ) -> go.Figure:
+    if time_bin_minutes <= 0:
+        raise ValueError("Шаг времени должен быть больше 0.")
+    if freq_bin_mhz <= 0:
+        raise ValueError("Шаг частоты должен быть больше 0.")
+
     df = _combine_post_data(files)
 
     if time_start is not None:
@@ -63,8 +72,8 @@ def build_heatmap_figure(
     if freq_max is not None:
         df = df[df["frequency"] <= freq_max]
 
-    df["time_bin"] = df["time"].dt.floor(f"{TIME_BIN_MINUTES}min")
-    df["freq_bin"] = (df["frequency"] // FREQ_BIN_MHZ) * FREQ_BIN_MHZ
+    df["time_bin"] = df["time"].dt.floor(f"{time_bin_minutes}min")
+    df["freq_bin"] = (df["frequency"] // freq_bin_mhz) * freq_bin_mhz
 
     if df.empty:
         pivot = pd.DataFrame()
@@ -82,16 +91,24 @@ def build_heatmap_figure(
     use_fixed_freq = freq_min is not None and freq_max is not None
 
     if use_fixed_time:
-        time_bins = _build_time_bins(time_start, time_end)
-    elif not pivot.empty:
-        time_bins = pivot.columns
+        time_bins = _build_time_bins(time_start, time_end, time_bin_minutes)
+    elif not df.empty:
+        time_bins = _build_time_bins(
+            df["time"].min().to_pydatetime(),
+            df["time"].max().to_pydatetime(),
+            time_bin_minutes,
+        )
     else:
         time_bins = pd.DatetimeIndex([])
 
     if use_fixed_freq:
-        freq_bins = _build_freq_bins(freq_min, freq_max)
-    elif not pivot.empty:
-        freq_bins = sorted(pivot.index.unique(), reverse=True)
+        freq_bins = _build_freq_bins(freq_min, freq_max, freq_bin_mhz)
+    elif not df.empty:
+        freq_bins = _build_freq_bins(
+            df["frequency"].min(),
+            df["frequency"].max(),
+            freq_bin_mhz,
+        )
     else:
         freq_bins = []
 
@@ -159,8 +176,8 @@ def build_heatmap_figure(
         autosize=False,
         dragmode="zoom",
         plot_bgcolor="#ffffff",
-        xaxis_title=f"Время (шаг {TIME_BIN_MINUTES} мин)",
-        yaxis_title=f"Частота (шаг {FREQ_BIN_MHZ} МГц)",
+        xaxis_title=f"Время (шаг {time_bin_minutes} мин)",
+        yaxis_title=f"Частота (шаг {freq_bin_mhz} МГц)",
         xaxis={
             "tickangle": -45,
             "type": "category",

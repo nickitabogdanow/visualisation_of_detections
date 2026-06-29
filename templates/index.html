@@ -237,7 +237,8 @@
   <div class="container">
     <h1>Визуализация IDF</h1>
     <p class="subtitle">
-      Heatmap: ось X — время (шаг 10 мин), ось Y — частота (шаг 10 МГц), в ячейке — количество частот.
+      Heatmap: ось X — время, ось Y — частота, в ячейке — количество частот.
+      Шаг сетки можно настроить перед построением.
       Перетаскивание — область зума, панель инструментов — сброс и масштаб.
     </p>
 
@@ -297,6 +298,21 @@
             </label>
           </div>
         </div>
+
+        <h2>Шаг сетки</h2>
+
+        <div class="range-group">
+          <div class="range-fields">
+            <label>
+              Время, мин
+              <input type="number" id="timeStepInput" min="1" step="1" value="10">
+            </label>
+            <label>
+              Частота, МГц
+              <input type="number" id="freqStepInput" min="1" step="1" value="10">
+            </label>
+          </div>
+        </div>
       </div>
 
       <p class="hint">
@@ -336,6 +352,8 @@
     const freqMinInput = document.getElementById("freqMinInput");
     const freqMaxInput = document.getElementById("freqMaxInput");
     const showValuesCheck = document.getElementById("showValuesCheck");
+    const timeStepInput = document.getElementById("timeStepInput");
+    const freqStepInput = document.getElementById("freqStepInput");
 
     let uploadedPosts = [];
     let lastChart = null;
@@ -401,6 +419,26 @@
       applyShowValues(showValuesCheck.checked);
     });
 
+    function readPositiveInteger(input, fieldName) {
+      const value = Number(input.value);
+      if (!Number.isInteger(value) || value <= 0) {
+        throw new Error(`${fieldName} должен быть целым числом больше 0.`);
+      }
+      return value;
+    }
+
+    function syncRangeInputSteps() {
+      const timeStepSeconds = Math.max(Number(timeStepInput.value) || 1, 1) * 60;
+      const freqStep = Math.max(Number(freqStepInput.value) || 1, 1);
+      timeStartInput.step = String(timeStepSeconds);
+      timeEndInput.step = String(timeStepSeconds);
+      freqMinInput.step = String(freqStep);
+      freqMaxInput.step = String(freqStep);
+    }
+
+    timeStepInput.addEventListener("input", syncRangeInputSteps);
+    freqStepInput.addEventListener("input", syncRangeInputSteps);
+
     function buildRangeParams(options = {}) {
       const validate = options.validate !== false;
       const params = new URLSearchParams();
@@ -429,6 +467,10 @@
         }
       }
 
+      const timeStep = readPositiveInteger(timeStepInput, "Шаг времени");
+      const freqStep = readPositiveInteger(freqStepInput, "Шаг частоты");
+      params.set("time_bin_minutes", String(timeStep));
+      params.set("freq_bin_mhz", String(freqStep));
       params.set("show_values", showValuesCheck.checked ? "true" : "false");
 
       return params;
@@ -672,6 +714,7 @@
     });
 
     (async function init() {
+      syncRangeInputSteps();
       await loadFileListPage(1);
 
       const initialPosts = {{ posts | tojson }};

@@ -19,7 +19,7 @@ import plotly
 import plotly.graph_objects as go
 
 from parser import load_csv_files, parse_csv_content
-from visualization import build_heatmap_figure
+from visualization import FREQ_BIN_MHZ, TIME_BIN_MINUTES, build_heatmap_figure
 
 IS_FROZEN = getattr(sys, "frozen", False)
 SOURCE_DIR = Path(__file__).resolve().parent
@@ -104,11 +104,18 @@ def _build_chart(
     freq_min: float | None = None,
     freq_max: float | None = None,
     show_values: bool = True,
+    time_bin_minutes: int = TIME_BIN_MINUTES,
+    freq_bin_mhz: int = FREQ_BIN_MHZ,
 ):
     ranges = _parse_chart_ranges(time_start, time_end, freq_min, freq_max)
     try:
         return build_heatmap_figure(
-            files, post_number, **ranges, show_values=show_values
+            files,
+            post_number,
+            **ranges,
+            show_values=show_values,
+            time_bin_minutes=time_bin_minutes,
+            freq_bin_mhz=freq_bin_mhz,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -235,6 +242,8 @@ async def chart_from_local(
     freq_min: float | None = Query(default=None),
     freq_max: float | None = Query(default=None),
     show_values: bool = Query(default=True),
+    time_bin_minutes: int = Query(default=TIME_BIN_MINUTES, ge=1),
+    freq_bin_mhz: int = Query(default=FREQ_BIN_MHZ, ge=1),
 ) -> dict:
     paths = _collect_local_csv_paths()
     if not paths:
@@ -252,6 +261,8 @@ async def chart_from_local(
         freq_min=freq_min,
         freq_max=freq_max,
         show_values=show_values,
+        time_bin_minutes=time_bin_minutes,
+        freq_bin_mhz=freq_bin_mhz,
     )
     return json.loads(fig.to_json())
 
@@ -277,6 +288,8 @@ async def chart_html_from_local(
     freq_min: float | None = Query(default=None),
     freq_max: float | None = Query(default=None),
     show_values: bool = Query(default=True),
+    time_bin_minutes: int = Query(default=TIME_BIN_MINUTES, ge=1),
+    freq_bin_mhz: int = Query(default=FREQ_BIN_MHZ, ge=1),
 ) -> Response:
     paths = _collect_local_csv_paths()
     if not paths:
@@ -294,6 +307,8 @@ async def chart_html_from_local(
         freq_min=freq_min,
         freq_max=freq_max,
         show_values=show_values,
+        time_bin_minutes=time_bin_minutes,
+        freq_bin_mhz=freq_bin_mhz,
     )
     return _html_download_response(fig, post_number, show_values=show_values)
 
@@ -307,6 +322,8 @@ async def chart_from_upload(
     freq_min: float | None = Query(default=None),
     freq_max: float | None = Query(default=None),
     show_values: bool = Query(default=True),
+    time_bin_minutes: int = Query(default=TIME_BIN_MINUTES, ge=1),
+    freq_bin_mhz: int = Query(default=FREQ_BIN_MHZ, ge=1),
 ) -> dict:
     if not files:
         raise HTTPException(status_code=400, detail="Загрузите хотя бы один CSV файл")
@@ -329,6 +346,8 @@ async def chart_from_upload(
         freq_min=freq_min,
         freq_max=freq_max,
         show_values=show_values,
+        time_bin_minutes=time_bin_minutes,
+        freq_bin_mhz=freq_bin_mhz,
     )
     return {
         "posts": posts,
@@ -346,6 +365,8 @@ async def chart_html_from_upload(
     freq_min: float | None = Query(default=None),
     freq_max: float | None = Query(default=None),
     show_values: bool = Query(default=True),
+    time_bin_minutes: int = Query(default=TIME_BIN_MINUTES, ge=1),
+    freq_bin_mhz: int = Query(default=FREQ_BIN_MHZ, ge=1),
 ) -> Response:
     if not files:
         raise HTTPException(status_code=400, detail="Загрузите хотя бы один CSV файл")
@@ -368,5 +389,7 @@ async def chart_html_from_upload(
         freq_min=freq_min,
         freq_max=freq_max,
         show_values=show_values,
+        time_bin_minutes=time_bin_minutes,
+        freq_bin_mhz=freq_bin_mhz,
     )
     return _html_download_response(fig, selected, show_values=show_values)
