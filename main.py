@@ -249,29 +249,24 @@ def _html_download_response(
     return Number(value) !== 0;
   }}
 
-  function getVisibleCategoryCount(axisRange, totalCount) {{
-    if (!Array.isArray(axisRange) || axisRange.length < 2) {{
-      return totalCount;
-    }}
+  function buildSizedLayout(trace, sourceLayout, resetAxes = false) {{
+    const xCount = trace.x ? trace.x.length : 0;
+    const yCount = trace.y ? trace.y.length : 0;
 
-    const start = Math.max(0, Math.floor(Math.min(axisRange[0], axisRange[1]) + 0.5));
-    const end = Math.min(totalCount - 1, Math.ceil(Math.max(axisRange[0], axisRange[1]) - 0.5));
-    return Math.max(1, end - start + 1);
-  }}
-
-  function buildSizedLayout(trace, sourceLayout, axisRanges = {{}}) {{
-    const hasXAxisRange = Object.prototype.hasOwnProperty.call(axisRanges, "xaxis");
-    const hasYAxisRange = Object.prototype.hasOwnProperty.call(axisRanges, "yaxis");
-    const xRange = hasXAxisRange ? axisRanges.xaxis : (sourceLayout.xaxis ? sourceLayout.xaxis.range : null);
-    const yRange = hasYAxisRange ? axisRanges.yaxis : (sourceLayout.yaxis ? sourceLayout.yaxis.range : null);
-    const xCount = getVisibleCategoryCount(xRange, trace.x ? trace.x.length : 0);
-    const yCount = getVisibleCategoryCount(yRange, trace.y ? trace.y.length : 0);
-
-    return {{
+    const layout = {{
       ...sourceLayout,
       width: Math.max(1, xCount) * CELL_WIDTH_PX + CHART_EXTRA_WIDTH_PX,
       height: Math.max(1, yCount) * CELL_HEIGHT_PX + CHART_EXTRA_HEIGHT_PX,
     }};
+
+    if (resetAxes) {{
+      layout.xaxis = {{ ...(layout.xaxis || {{}}), autorange: true }};
+      layout.yaxis = {{ ...(layout.yaxis || {{}}), autorange: true }};
+      delete layout.xaxis.range;
+      delete layout.yaxis.range;
+    }}
+
+    return layout;
   }}
 
   function buildFilteredTrace() {{
@@ -303,56 +298,15 @@ def _html_download_response(
     }};
   }}
 
-  function applyOptions() {{
+  function applyOptions(resetAxes) {{
     const trace = buildFilteredTrace();
-    Plotly.react(plotDiv, [trace], buildSizedLayout(trace, baseLayout));
+    Plotly.react(plotDiv, [trace], buildSizedLayout(trace, baseLayout, resetAxes === true));
   }}
 
-  let isResizing = false;
-  let resizeTimer = null;
-  if (typeof plotDiv.on === "function") {{
-    plotDiv.on("plotly_relayout", function(eventData) {{
-      if (isResizing) {{
-        return;
-      }}
-
-      const xRange = eventData["xaxis.range"] || (
-        eventData["xaxis.range[0]"] != null && eventData["xaxis.range[1]"] != null
-          ? [eventData["xaxis.range[0]"], eventData["xaxis.range[1]"]]
-          : null
-      );
-      const yRange = eventData["yaxis.range"] || (
-        eventData["yaxis.range[0]"] != null && eventData["yaxis.range[1]"] != null
-          ? [eventData["yaxis.range[0]"], eventData["yaxis.range[1]"]]
-          : null
-      );
-
-      if (!xRange && !yRange && !eventData["xaxis.autorange"] && !eventData["yaxis.autorange"]) {{
-        return;
-      }}
-
-      clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(function() {{
-        const trace = plotDiv.data[0];
-        const sizedLayout = buildSizedLayout(trace, plotDiv.layout, {{
-          xaxis: eventData["xaxis.autorange"] ? null : xRange,
-          yaxis: eventData["yaxis.autorange"] ? null : yRange,
-        }});
-        isResizing = true;
-        Plotly.relayout(plotDiv, {{
-          width: sizedLayout.width,
-          height: sizedLayout.height,
-        }}).finally(function() {{
-          isResizing = false;
-        }});
-      }}, 120);
-    }});
-  }}
-
-  valuesToggle.addEventListener("change", applyOptions);
-  rowsToggle.addEventListener("change", applyOptions);
-  columnsToggle.addEventListener("change", applyOptions);
-  applyOptions();
+  valuesToggle.addEventListener("change", function() {{ applyOptions(false); }});
+  rowsToggle.addEventListener("change", function() {{ applyOptions(true); }});
+  columnsToggle.addEventListener("change", function() {{ applyOptions(true); }});
+  applyOptions(true);
 }})();
 </script>
 """

@@ -367,7 +367,6 @@
 
     let uploadedPosts = [];
     let lastChart = null;
-    let relayoutHandlerAttached = false;
     let fileListPage = 1;
 
     const fileListEl = document.getElementById("fileList");
@@ -439,7 +438,8 @@
       applyChartOptions(
         hideZeroRowsCheck.checked
           ? "Нулевые строки с частотами скрыты."
-          : "Нулевые строки с частотами показаны."
+          : "Нулевые строки с частотами показаны.",
+        true
       );
     });
 
@@ -447,7 +447,8 @@
       applyChartOptions(
         hideZeroColumnsCheck.checked
           ? "Нулевые столбцы со временем скрыты."
-          : "Нулевые столбцы со временем показаны."
+          : "Нулевые столбцы со временем показаны.",
+        true
       );
     });
 
@@ -645,32 +646,27 @@
       return [trace, ...lastChart.baseData.slice(1)];
     }
 
-    function getVisibleCategoryCount(axisRange, totalCount) {
-      if (!Array.isArray(axisRange) || axisRange.length < 2) {
-        return totalCount;
-      }
+    function buildSizedLayout(trace, sourceLayout, resetAxes = false) {
+      const xCount = trace.x?.length ?? 0;
+      const yCount = trace.y?.length ?? 0;
 
-      const start = Math.max(0, Math.floor(Math.min(axisRange[0], axisRange[1]) + 0.5));
-      const end = Math.min(totalCount - 1, Math.ceil(Math.max(axisRange[0], axisRange[1]) - 0.5));
-      return Math.max(1, end - start + 1);
-    }
-
-    function buildSizedLayout(trace, sourceLayout, axisRanges = {}) {
-      const hasXAxisRange = Object.prototype.hasOwnProperty.call(axisRanges, "xaxis");
-      const hasYAxisRange = Object.prototype.hasOwnProperty.call(axisRanges, "yaxis");
-      const xRange = hasXAxisRange ? axisRanges.xaxis : sourceLayout.xaxis?.range;
-      const yRange = hasYAxisRange ? axisRanges.yaxis : sourceLayout.yaxis?.range;
-      const xCount = getVisibleCategoryCount(xRange, trace.x?.length ?? 0);
-      const yCount = getVisibleCategoryCount(yRange, trace.y?.length ?? 0);
-
-      return {
+      const layout = {
         ...sourceLayout,
         width: Math.max(1, xCount) * CELL_WIDTH_PX + CHART_EXTRA_WIDTH_PX,
         height: Math.max(1, yCount) * CELL_HEIGHT_PX + CHART_EXTRA_HEIGHT_PX,
       };
+
+      if (resetAxes) {
+        layout.xaxis = { ...(layout.xaxis ?? {}), autorange: true };
+        layout.yaxis = { ...(layout.yaxis ?? {}), autorange: true };
+        delete layout.xaxis.range;
+        delete layout.yaxis.range;
+      }
+
+      return layout;
     }
 
-    function applyChartOptions(statusText = null) {
+    function applyChartOptions(statusText = null, resetAxes = false) {
       if (!lastChart) {
         return;
       }
@@ -681,60 +677,13 @@
         hideZeroColumnsCheck.checked
       );
       lastChart.data = data;
-      lastChart.layout = buildSizedLayout(data[0], lastChart.baseLayout);
+      lastChart.layout = buildSizedLayout(data[0], lastChart.baseLayout, resetAxes);
       lastChart.cellValues = data[0]?.z ?? null;
 
-      Plotly.react(chartEl, data, lastChart.layout, plotlyConfig).then(() => {
-        attachRelayoutHandler();
-      });
+      Plotly.react(chartEl, data, lastChart.layout, plotlyConfig);
       if (statusText) {
         setStatus(statusText);
       }
-    }
-
-    function attachRelayoutHandler() {
-      if (!lastChart || relayoutHandlerAttached || typeof chartEl.on !== "function") {
-        return;
-      }
-
-      chartEl.on("plotly_relayout", (eventData) => {
-        if (!lastChart || lastChart.isResizing) {
-          return;
-        }
-
-        const xRange = eventData["xaxis.range"] ?? (
-          eventData["xaxis.range[0]"] != null && eventData["xaxis.range[1]"] != null
-            ? [eventData["xaxis.range[0]"], eventData["xaxis.range[1]"]]
-            : null
-        );
-        const yRange = eventData["yaxis.range"] ?? (
-          eventData["yaxis.range[0]"] != null && eventData["yaxis.range[1]"] != null
-            ? [eventData["yaxis.range[0]"], eventData["yaxis.range[1]"]]
-            : null
-        );
-
-        if (!xRange && !yRange && !eventData["xaxis.autorange"] && !eventData["yaxis.autorange"]) {
-          return;
-        }
-
-        clearTimeout(lastChart.resizeTimer);
-        lastChart.resizeTimer = setTimeout(() => {
-          const axisRanges = {
-            xaxis: eventData["xaxis.autorange"] ? null : xRange,
-            yaxis: eventData["yaxis.autorange"] ? null : yRange,
-          };
-          const sizedLayout = buildSizedLayout(lastChart.data[0], chartEl.layout, axisRanges);
-          lastChart.layout = sizedLayout;
-          lastChart.isResizing = true;
-          Plotly.relayout(chartEl, {
-            width: sizedLayout.width,
-            height: sizedLayout.height,
-          }).finally(() => {
-            lastChart.isResizing = false;
-          });
-        }, 120);
-      });
-      relayoutHandlerAttached = true;
     }
 
     function renderChart(data, layout) {
@@ -749,10 +698,8 @@
         data: null,
         layout: null,
         cellValues: null,
-        isResizing: false,
-        resizeTimer: null,
       };
-      applyChartOptions();
+      applyChartOptions(null, true);
       downloadBtn.disabled = false;
     }
 
