@@ -91,6 +91,41 @@ def parse_metadata(lines: list[str]) -> tuple[CsvMetadata, int]:
     return metadata, 7
 
 
+def _is_time_only(value: str) -> bool:
+    return bool(re.match(r"^\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?$", str(value).strip()))
+
+
+def _parse_times_with_metadata(
+    values: pd.Series, analysis_start_time: str
+) -> pd.Series:
+    metadata_dt = pd.to_datetime(analysis_start_time, errors="coerce", format="mixed")
+    if pd.isna(metadata_dt):
+        raise ValueError(
+            f"Некорректное время начала анализа в метаданных: {analysis_start_time!r}"
+        )
+
+    base_day = metadata_dt.normalize()
+    parsed: list[pd.Timestamp] = []
+
+    for raw in values:
+        raw_str = str(raw).strip()
+        if not raw_str or raw_str.lower() == "nan":
+            parsed.append(pd.NaT)
+            continue
+
+        if _is_time_only(raw_str):
+            time_part = pd.to_datetime(raw_str, errors="coerce", format="mixed")
+            if pd.isna(time_part):
+                parsed.append(pd.NaT)
+            else:
+                parsed.append(base_day + (time_part - time_part.normalize()))
+            continue
+
+        parsed.append(pd.to_datetime(raw_str, errors="coerce", format="mixed"))
+
+    return pd.Series(parsed, dtype="datetime64[ns]")
+
+
 def parse_csv_content(content: str | bytes, source: str = "upload") -> ParsedCsv:
     lines = _read_raw_lines(content)
     metadata, header_row_idx = parse_metadata(lines)
@@ -114,7 +149,7 @@ def parse_csv_content(content: str | bytes, source: str = "upload") -> ParsedCsv
         )
 
     data = data.rename(columns={time_col: "time", freq_col: "frequency"})
-    data["time"] = pd.to_datetime(data["time"], errors="coerce", format="mixed")
+    data["time"] = _parse_times_with_metadata(data["time"], metadata.analysis_start_time)
     data["frequency"] = pd.to_numeric(data["frequency"], errors="coerce")
 
     data = data.dropna(subset=["time", "frequency"])
