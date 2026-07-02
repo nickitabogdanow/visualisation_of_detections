@@ -91,8 +91,13 @@ def parse_metadata(lines: list[str]) -> tuple[CsvMetadata, int]:
     return metadata, 7
 
 
-def _is_time_only(value: str) -> bool:
-    return bool(re.match(r"^\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?$", str(value).strip()))
+_TIME_ONLY_PATTERN = re.compile(r"^\d{1,2}:\d{2}(:\d{2}(\.\d+)?)?$")
+
+
+def _time_only_mask(values: pd.Series) -> pd.Series:
+    as_str = values.astype(str).str.strip()
+    valid = values.notna() & (as_str.str.lower() != "nan") & (as_str != "")
+    return valid & as_str.str.match(_TIME_ONLY_PATTERN.pattern, na=False)
 
 
 def _parse_times_with_metadata(
@@ -104,26 +109,19 @@ def _parse_times_with_metadata(
             f"Некорректное время начала анализа в метаданных: {analysis_start_time!r}"
         )
 
+    mask = _time_only_mask(values)
+    if not mask.any():
+        return pd.to_datetime(values, errors="coerce", format="mixed")
+
     base_day = metadata_dt.normalize()
-    parsed: list[pd.Timestamp] = []
+    if mask.all():
+        time_parts = pd.to_datetime(values.astype(str).str.strip(), errors="coerce", format="mixed")
+        return base_day + (time_parts - time_parts.dt.normalize())
 
-    for raw in values:
-        raw_str = str(raw).strip()
-        if not raw_str or raw_str.lower() == "nan":
-            parsed.append(pd.NaT)
-            continue
-
-        if _is_time_only(raw_str):
-            time_part = pd.to_datetime(raw_str, errors="coerce", format="mixed")
-            if pd.isna(time_part):
-                parsed.append(pd.NaT)
-            else:
-                parsed.append(base_day + (time_part - time_part.normalize()))
-            continue
-
-        parsed.append(pd.to_datetime(raw_str, errors="coerce", format="mixed"))
-
-    return pd.Series(parsed, dtype="datetime64[ns]")
+    result = pd.to_datetime(values, errors="coerce", format="mixed")
+    time_parts = pd.to_datetime(values[mask].astype(str).str.strip(), errors="coerce", format="mixed")
+    result.loc[mask] = base_day + (time_parts - time_parts.dt.normalize())
+    return result
 
 
 def parse_csv_content(content: str | bytes, source: str = "upload") -> ParsedCsv:
